@@ -1,0 +1,13 @@
+{
+  "name": "lambda-trigger-on-s3-upload",
+  "version": "1.0.0",
+  "description": "Distributed serverless service to manage uploaded objects to S3",
+  "scripts": {
+    "deploy": "./template/deploy.sh"
+  },
+  "author": "Arpad Toth",
+  "license": "ISC",
+  "dependencies": {
+    "aws-sdk": "^2.824.0"
+  }
+}

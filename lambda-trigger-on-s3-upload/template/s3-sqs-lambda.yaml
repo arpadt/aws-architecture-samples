@@ -1,0 +1,141 @@
+Transform: AWS::Serverless-2016-10-31
+
+Description: Simple distributed serverless architecture for handling uploaded objects to S3
+
+Parameters:
+  Username:
+    Type: String
+    Description: Your username which prepends the name of the resources
+
+Resources:
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${Username}-upload-trigger-flow-bucket
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Queue: !GetAtt S3HandlerQueue.Arn
+  S3HandlerQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${Username}-s3-handler-queue
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 15
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt S3HandlerDLQ.Arn
+        maxReceiveCount: 2
+  S3HandlerQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref S3HandlerQueue
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sqs:SendMessage
+            Resource:
+              - !GetAtt S3HandlerQueue.Arn
+            Condition:
+              ArnEquals:
+                'aws:SourceArn': !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Sub ${Username}-upload-trigger-flow-bucket
+  S3HandlerDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${Username}-s3-handler-dlq
+  S3HandlerFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Getting and processing uploaded objects from S3
+      Runtime: nodejs12.x
+      Handler: s3Handler.handler
+      CodeUri: ../src
+      Events:
+        S3HandlerQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt S3HandlerQueue.Arn
+      Role: !GetAtt S3HandlerFnRole.Arn
+  S3HandlerFnRole:
+    Type: AWS::IAM::Role
+    DependsOn:
+      - S3HandlerQueue
+      - SourceBucket
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub ${Username}-s3-handler-fn-role-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt S3HandlerQueue.Arn
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Sub ${Username}-upload-trigger-flow-bucket
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Sub ${Username}-upload-trigger-flow-bucket
+                      - '/*'
+  DLQTooManyMessagesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Send an alarm message when there are items in the dead letter queue
+      Namespace: AWS/SQS
+      MetricName: DLQTooManyMessages
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt S3HandlerDLQ.QueueName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmTopic
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${Username}-alarm-topic
