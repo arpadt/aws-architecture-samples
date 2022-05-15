@@ -1,0 +1,2 @@
+export STAGE=dev
+export STACK_NAME=<STACK NAME HERE>
